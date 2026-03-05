@@ -37,6 +37,14 @@ import { createJsonlWriter } from "./jsonl-writer.js";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+/**
+ * Max retries for instant startup failures (lock contention, auth race).
+ * Only retries when exitCode != 0 AND duration < threshold AND no messages received.
+ */
+const INSTANT_FAILURE_RETRY_MAX = 2;
+const INSTANT_FAILURE_THRESHOLD_MS = 5000;
+const INSTANT_FAILURE_RETRY_DELAY_MS = 1500;
+
 export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {
 	if (!model || !thinking || thinking === "off") return model;
 	const colonIdx = model.lastIndexOf(":");
@@ -45,7 +53,8 @@ export function applyThinkingSuffix(model: string | undefined, thinking: string 
 }
 
 /**
- * Run a subagent synchronously (blocking until complete)
+ * Run a subagent synchronously (blocking until complete).
+ * Automatically retries on instant startup failures (lock contention).
  */
 export async function runSync(
 	runtimeCwd: string,
@@ -448,6 +457,24 @@ export async function runSync(
 			// HTML export disabled - module resolution issues with global pi installation
 			// Users can still access the session file directly
 		}
+	}
+
+	// Retry on instant startup failures (lock contention on settings.json / auth.json).
+	// Detection: non-zero exit, very short duration, no messages received (process never started).
+	const retryAttempt = options._retryAttempt ?? 0;
+	if (
+		result.exitCode !== 0 &&
+		progress.durationMs < INSTANT_FAILURE_THRESHOLD_MS &&
+		result.messages.length === 0 &&
+		retryAttempt < INSTANT_FAILURE_RETRY_MAX &&
+		!signal?.aborted
+	) {
+		const delay = INSTANT_FAILURE_RETRY_DELAY_MS * (retryAttempt + 1);
+		await new Promise((resolve) => setTimeout(resolve, delay));
+		return runSync(runtimeCwd, agents, agentName, task, {
+			...options,
+			_retryAttempt: retryAttempt + 1,
+		});
 	}
 
 	return result;
