@@ -213,6 +213,8 @@ export interface RunSyncOptions {
 	modelOverride?: string;
 	/** Skills to inject (overrides agent default if provided) */
 	skills?: string[];
+	/** Internal: current retry attempt for instant-failure recovery */
+	_retryAttempt?: number;
 }
 
 export interface ExtensionConfig {

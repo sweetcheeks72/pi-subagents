@@ -328,6 +328,14 @@ export function extractTextFromContent(content: unknown): string {
 /**
  * Map over items with limited concurrency
  */
+/**
+ * Stagger delay between concurrent worker spawns (ms).
+ * Prevents settings.json lock contention when multiple pi processes
+ * start simultaneously — lockSync in Pi core uses retries:0, so
+ * concurrent startups cause ~50% failure rate without stagger.
+ */
+const SPAWN_STAGGER_MS = 500;
+
 export async function mapConcurrent<T, R>(
 	items: T[],
 	limit: number,
@@ -338,14 +346,18 @@ export async function mapConcurrent<T, R>(
 	const results: R[] = new Array(items.length);
 	let next = 0;
 
-	async function worker(): Promise<void> {
+	async function worker(workerIndex: number): Promise<void> {
+		// Stagger startup to avoid settings.json lock contention
+		if (workerIndex > 0) {
+			await new Promise(resolve => setTimeout(resolve, workerIndex * SPAWN_STAGGER_MS));
+		}
 		while (next < items.length) {
 			const i = next++;
 			results[i] = await fn(items[i], i);
 		}
 	}
 
-	const workers = Array.from({ length: Math.min(safeLimit, items.length) }, () => worker());
+	const workers = Array.from({ length: Math.min(safeLimit, items.length) }, (_, wi) => worker(wi));
 	await Promise.all(workers);
 	return results;
 }
