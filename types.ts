@@ -115,6 +115,8 @@ export interface SingleResult {
 	artifactPath?: string;
 	// TASK-02: Context slicing flag
 	contextSliced?: boolean;
+	// Tool warnings — e.g. unknown tools detected in agent output
+	warnings?: string[];
 }
 
 export interface Details {

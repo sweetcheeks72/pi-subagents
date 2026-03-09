@@ -620,6 +620,16 @@ export async function runSync(
 		}
 	}
 
+	// Detect unknown tool warnings in agent output (e.g. search_codebase not loaded).
+	// This is a detection pass only — does not retry or change execution flow.
+	{
+		const fullText = collectAssistantText(result.messages);
+		const toolWarnings = extractToolWarnings(fullText);
+		if (toolWarnings.length > 0) {
+			result.warnings = toolWarnings;
+		}
+	}
+
 	return result;
 }
 
@@ -681,4 +691,46 @@ function injectSyntheticMessage(result: SingleResult, text: string): void {
 		},
 	} as unknown as import("@mariozechner/pi-ai").Message;
 	result.messages.push(syntheticMessage);
+}
+
+// ============================================================================
+// Tool Warning Detection
+// ============================================================================
+
+/**
+ * Scan agent output text for unknown-tool warning patterns and extract the
+ * tool name(s) mentioned. This catches the case where a tool like
+ * `search_codebase` is listed in the agent's tools config but the extension
+ * isn't loaded in the subprocess pi runtime — the agent produces degraded
+ * output with no explanation.
+ *
+ * Detection only — does NOT change execution flow or trigger retries.
+ */
+function extractToolWarnings(text: string): string[] {
+	if (!text) return [];
+	const warnings: string[] = [];
+	const seen = new Set<string>();
+
+	// Pattern 1: "Unknown tool: <name>" (pi error format)
+	const unknownToolRegex = /unknown tool[:\s]+["']?([a-z_][a-z0-9_]*)["']?/gi;
+	let m: RegExpExecArray | null;
+	while ((m = unknownToolRegex.exec(text)) !== null) {
+		const toolName = m[1];
+		if (toolName && !seen.has(toolName)) {
+			seen.add(toolName);
+			warnings.push(`${toolName} not available`);
+		}
+	}
+
+	// Pattern 2: "tool not found: <name>" (alternate phrasing)
+	const toolNotFoundRegex = /tool not found[:\s]+["']?([a-z_][a-z0-9_]*)["']?/gi;
+	while ((m = toolNotFoundRegex.exec(text)) !== null) {
+		const toolName = m[1];
+		if (toolName && !seen.has(toolName)) {
+			seen.add(toolName);
+			warnings.push(`${toolName} not available`);
+		}
+	}
+
+	return warnings;
 }

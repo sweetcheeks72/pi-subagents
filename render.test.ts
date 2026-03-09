@@ -128,3 +128,16 @@ test("renderSubagentResult collapsed view appends failover suffix to usage line"
 
 	assert.ok(lines.some((line) => line.includes("failover:")), "collapsed view should append failover suffix");
 });
+
+test("renderSubagentResult collapsed view shows truncation info when truncatedAt is set", () => {
+	const lines = withTerminalWidth(245, () => {
+		const widget = renderSubagentResult(
+			makeSingleResult("Done", { truncatedAt: { lines: 2000, bytes: 50000 } }) as never,
+			{ expanded: false },
+			theme as never,
+		);
+		return widget.render(245);
+	});
+
+	assert.ok(lines.some((line) => line.includes("truncated")), "collapsed view should show truncation info when truncatedAt is set");
+});

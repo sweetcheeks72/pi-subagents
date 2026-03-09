@@ -11,6 +11,7 @@ import {
 	getProviderFamily,
 	getNextFailoverModel,
 	getFailoverDelay,
+	detectProviderError,
 	FAILOVER_BASE_DELAY_MS,
 	FAILOVER_SEQUENCE,
 } from "./failover.ts";
@@ -163,5 +164,71 @@ describe("getFailoverDelay", () => {
 		const delay1 = getFailoverDelay(1);
 		const delay2 = getFailoverDelay(2);
 		assert.equal(delay2, delay1 * 2);
+	});
+});
+
+// ============================================================================
+// detectProviderError — auth-error detection and failover category
+// ============================================================================
+
+describe("detectProviderError", () => {
+	it("returns false for undefined error", () => {
+		assert.equal(detectProviderError(undefined), false);
+	});
+
+	it("returns 'rate_limit' for rate_limit_error", () => {
+		assert.equal(detectProviderError("rate_limit_error exceeded"), "rate_limit");
+	});
+
+	it("returns 'rate_limit' for overloaded error", () => {
+		assert.equal(detectProviderError("overloaded_error"), "rate_limit");
+	});
+
+	it("returns 'rate_limit' for 529 status code string", () => {
+		assert.equal(detectProviderError("HTTP 529 Service Unavailable"), "rate_limit");
+	});
+
+	it("returns 'auth_error' for 401 response", () => {
+		assert.equal(detectProviderError("HTTP 401 Unauthorized"), "auth_error");
+	});
+
+	it("returns 'auth_error' for 403 response", () => {
+		assert.equal(detectProviderError("HTTP 403 Forbidden"), "auth_error");
+	});
+
+	it("returns 'auth_error' for invalid_api_key", () => {
+		assert.equal(detectProviderError("invalid_api_key: the provided key is not valid"), "auth_error");
+	});
+
+	it("returns 'auth_error' for authentication_error", () => {
+		assert.equal(detectProviderError("authentication_error"), "auth_error");
+	});
+
+	it("returns 'auth_error' for unauthorized (case-insensitive)", () => {
+		assert.equal(detectProviderError("Unauthorized access"), "auth_error");
+	});
+
+	it("returns 'auth_error' for No auth credentials", () => {
+		assert.equal(detectProviderError("No auth credentials found"), "auth_error");
+	});
+
+	it("auth_error is truthy — triggers same failover behavior as rate_limit", () => {
+		const result = detectProviderError("401 Unauthorized");
+		assert.ok(result, "auth_error should be truthy to trigger failover");
+		assert.equal(result, "auth_error");
+	});
+
+	it("auth error (401) causes failover to skip to next provider", () => {
+		// Simulate: current model is anthropic, got 401 → should advance to openai
+		const errorType = detectProviderError("HTTP 401 Unauthorized");
+		assert.ok(errorType, "auth error should be detected");
+		// With auth error detected, getNextFailoverModel advances to next provider
+		const nextModel = getNextFailoverModel("anthropic/claude-sonnet-4-5", []);
+		assert.equal(nextModel, "anthropic/claude-haiku-4-5", "first failover still tries anthropic attempt-2");
+		// After both anthropic attempts fail with auth errors, advances to openai
+		const nextAfterBothAnthropic = getNextFailoverModel("anthropic/claude-haiku-4-5", [
+			"anthropic/claude-sonnet-4-5",
+		]);
+		assert.equal(nextAfterBothAnthropic, "openai/gpt-4o", "after anthropic exhausted, skips to openai");
 	});
 });
