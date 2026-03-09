@@ -836,6 +836,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 							artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 							truncation: r.truncation,
 						},
+						...(singleResult.warnings?.length ? { warnings: singleResult.warnings } : {}),
 						isError: true,
 					};
 				return {
@@ -847,6 +848,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 						artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 						truncation: r.truncation,
 					},
+					...(singleResult.warnings?.length ? { warnings: singleResult.warnings } : {}),
 				};
 			}
 

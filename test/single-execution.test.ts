@@ -333,6 +333,31 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.ok(result.artifactPath, "artifactPath should be set when truncated");
 	});
 
+	// -----------------------------------------------------------------------
+	// FIX 4: Tool warnings propagate to top-level result
+	// -----------------------------------------------------------------------
+
+	it("FIX-4: detects unknown tool warnings in agent output and surfaces in result.warnings", async () => {
+		mockPi.onCall({
+			jsonl: [
+				events.assistantMessage(
+					"I'll use search_codebase to find relevant code.\nUnknown tool: search_codebase. Let me try another approach.",
+				),
+			],
+		});
+		const agents = makeAgentConfigs(["worker"]);
+
+		const result = await runSync(tempDir, agents, "worker", "Find relevant code", {});
+
+		assert.equal(result.exitCode, 0);
+		assert.ok(Array.isArray(result.warnings), "warnings should be an array on result");
+		assert.ok(result.warnings!.length > 0, "should detect the unknown tool warning");
+		assert.ok(
+			result.warnings!.some((w: string) => w.includes("search_codebase")),
+			`warning should mention search_codebase, got: ${JSON.stringify(result.warnings)}`,
+		);
+	});
+
 	it("TASK-14: banner format includes original size and artifactPath", async () => {
 		// 10 lines, limit 5 — banner should show original 10 lines
 		const output = Array.from({ length: 10 }, (_, i) => `Line ${i + 1}`).join("\n");

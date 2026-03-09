@@ -164,4 +164,40 @@ describe("runSync provider failover", { skip: !available ? "pi packages not avai
 		assert.notEqual(output.trim(), "", "should synthesize a non-empty error response");
 		assert.ok(!output.includes("(no output)"));
 	});
+
+	it("exhausts all 3 providers on auth errors without hanging, returns partial with full failover path", async () => {
+		// All 6 attempts fail with authentication errors (invalid_api_key / 401)
+		for (const errorMessage of [
+			"authentication_error: invalid api key for anthropic primary",
+			"authentication_error: invalid api key for anthropic fallback",
+			"authentication_error: 401 unauthorized openai primary",
+			"authentication_error: 401 unauthorized openai fallback",
+			"authentication_error: invalid_api_key google primary",
+			"authentication_error: invalid_api_key google fallback",
+		]) {
+			mockPi.onCall({
+				jsonl: [providerErrorEvent(errorMessage)],
+				exitCode: 1,
+			});
+		}
+
+		const agents = [makeAgent("worker", { model: "anthropic/claude-sonnet-4-5" })];
+		const result = await runSync(tempDir, agents, "worker", "Handle auth error exhaustion", {});
+
+		assert.equal(mockPi.callCount(), 6, "should attempt all 6 provider slots before giving up");
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.partial, true, "should be marked partial after full auth exhaustion");
+		assert.deepEqual(result.failoverPath, [
+			"anthropic/claude-sonnet-4-5",
+			"anthropic/claude-haiku-4-5",
+			"openai/gpt-4o",
+			"openai/gpt-4o-mini",
+			"google/gemini-2.0-flash",
+			"google/gemini-flash-1.5",
+		]);
+		assert.ok(result.error?.includes("authentication_error"), "error should mention auth failure");
+		const output = getFinalOutput(result.messages);
+		assert.ok(output.includes("⚠️ PARTIAL:"), "output should include PARTIAL marker");
+		assert.notEqual(output.trim(), "", "should produce non-empty output, not hang");
+	});
 });

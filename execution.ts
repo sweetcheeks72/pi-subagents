@@ -712,6 +712,9 @@ function extractToolWarnings(text: string): string[] {
 	const seen = new Set<string>();
 
 	// Pattern 1: "Unknown tool: <name>" (pi error format)
+	// VERIFIED: tools-manager.js emits `throw new Error(\`Unknown tool: ${tool}\`)`
+	// Format: "Unknown tool: search_codebase" — the regex correctly matches this
+	// (colon + space after tool name, no quotes around the tool name)
 	const unknownToolRegex = /unknown tool[:\s]+["']?([a-z_][a-z0-9_]*)["']?/gi;
 	let m: RegExpExecArray | null;
 	while ((m = unknownToolRegex.exec(text)) !== null) {
