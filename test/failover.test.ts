@@ -98,6 +98,35 @@ describe("runSync provider failover", { skip: !available ? "pi packages not avai
 		assert.equal(getFinalOutput(result.messages), "Recovered on OpenAI");
 	});
 
+	it("preserves partial findings collected before exhausted provider failover", async () => {
+		mockPi.onCall({
+			jsonl: [providerErrorEvent("rate_limit_error: anthropic primary", "Found config in execution.ts")],
+			exitCode: 1,
+		});
+		for (const errorMessage of [
+			"overloaded_error: anthropic fallback",
+			"rate_limit_error: openai primary",
+			"overloaded_error: openai fallback",
+			"rate_limit_error: google primary",
+			"overloaded_error: google fallback",
+		]) {
+			mockPi.onCall({
+				jsonl: [providerErrorEvent(errorMessage)],
+				exitCode: 1,
+			});
+		}
+
+		const agents = [makeAgent("worker", { model: "anthropic/claude-sonnet-4-5" })];
+		const result = await runSync(tempDir, agents, "worker", "Handle provider failover", {});
+
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.partial, true);
+		assert.equal(result.partialReason, "overloaded_error: google fallback");
+		const output = getFinalOutput(result.messages);
+		assert.match(output, /^⚠️ PARTIAL: overloaded_error: google fallback\. Found before failure:/);
+		assert.ok(output.includes("Found config in execution.ts"));
+	});
+
 	it("returns a structured partial failure with the full exhausted failover path", async () => {
 		for (const errorMessage of [
 			"rate_limit_error: anthropic primary",
@@ -128,7 +157,11 @@ describe("runSync provider failover", { skip: !available ? "pi packages not avai
 			"google/gemini-flash-1.5",
 		]);
 		assert.ok(result.error?.includes("overloaded_error"));
-		assert.ok(getFinalOutput(result.messages).includes("⚠️ PARTIAL:"));
-		assert.ok(getFinalOutput(result.messages).includes("google fallback"));
+		assert.equal(result.partialReason, "overloaded_error: google fallback");
+		const output = getFinalOutput(result.messages);
+		assert.ok(output.includes("⚠️ PARTIAL:"));
+		assert.ok(output.includes("google fallback"));
+		assert.notEqual(output.trim(), "", "should synthesize a non-empty error response");
+		assert.ok(!output.includes("(no output)"));
 	});
 });

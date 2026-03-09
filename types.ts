@@ -88,6 +88,8 @@ export interface SingleResult {
 	usage: Usage;
 	model?: string;
 	error?: string;
+	outputTargetPath?: string;
+	outputTargetExists?: boolean;
 	sessionFile?: string;
 	skills?: string[];
 	skillsWarning?: string;
@@ -95,6 +97,17 @@ export interface SingleResult {
 	progressSummary?: ProgressSummary;
 	artifactPaths?: ArtifactPaths;
 	truncation?: TruncationResult;
+	// TASK-01: Provider failover path (list of models tried before success/failure)
+	failoverPath?: string[];
+	// TASK-03: Scout graceful degradation — partial result flag
+	partial: boolean;
+	partialReason?: string;
+	// TASK-06: Output truncation metadata (flat convenience fields)
+	truncated?: boolean;
+	truncatedAt?: { bytes?: number; lines?: number };
+	artifactPath?: string;
+	// TASK-02: Context slicing flag
+	contextSliced?: boolean;
 }
 
 export interface Details {
@@ -215,6 +228,8 @@ export interface RunSyncOptions {
 	skills?: string[];
 	/** Internal: current retry attempt for instant-failure recovery */
 	_retryAttempt?: number;
+	/** Internal: provider failover path (models already tried and failed) */
+	_failoverPath?: string[];
 }
 
 export interface ExtensionConfig {
@@ -226,9 +241,21 @@ export interface ExtensionConfig {
 // ============================================================================
 
 export const DEFAULT_MAX_OUTPUT: Required<MaxOutputConfig> = {
-	bytes: 200 * 1024,
+	bytes: 200 * 1024, // 200KB — default limit (scouts and other agents)
 	lines: 5000,
 };
+
+/**
+ * TASK-06: Worker agents produce larger output (full implementations, test runs).
+ * Use 500KB for worker/crew-worker/debug-worker agents.
+ */
+export const WORKER_MAX_OUTPUT: Required<MaxOutputConfig> = {
+	bytes: 500 * 1024, // 500KB
+	lines: 5000,
+};
+
+/** Agents that should use WORKER_MAX_OUTPUT when no explicit maxOutput is provided */
+export const WORKER_AGENT_NAMES = ["worker", "crew-worker", "debug-worker"];
 
 export const DEFAULT_ARTIFACT_CONFIG: ArtifactConfig = {
 	enabled: true,
@@ -311,7 +338,10 @@ export function truncateOutput(
 	}
 
 	const keptLines = result.split("\n").length;
-	const marker = `[TRUNCATED: showing first ${keptLines} of ${lines.length} lines, ${formatBytes(Buffer.byteLength(result))} of ${formatBytes(bytes)}${artifactPath ? ` - full output at ${artifactPath}` : ""}]\n`;
+	const resultKB = (Buffer.byteLength(result, "utf-8") / 1024).toFixed(1);
+	// TASK-06: New truncation warning format with artifact path
+	const artifactRef = artifactPath ? ` Full output: ${artifactPath}` : "";
+	const marker = `⚠️ OUTPUT TRUNCATED at ${lines.length} lines / ${(bytes / 1024).toFixed(1)}KB (showing first ${keptLines} lines / ${resultKB}KB).${artifactRef}\n\n`;
 
 	return {
 		text: marker + result,

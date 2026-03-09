@@ -84,6 +84,7 @@ export async function runSync(
 			messages: [],
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
 			error: `Unknown agent: ${agentName}`,
+			partial: false,
 		};
 	}
 
@@ -176,6 +177,7 @@ export async function runSync(
 		exitCode: 0,
 		messages: [],
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+		partial: false,
 		model: modelArg,
 		skills: resolvedSkills.length > 0 ? resolvedSkills.map((s) => s.name) : undefined,
 		skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
@@ -575,19 +577,33 @@ export async function runSync(
 				_failoverPath: updatedFailoverPath,
 				_retryAttempt: 0, // reset instant-failure counter for new provider
 			});
+			if (result.messages.length > 0) {
+				if (failoverResult.partial && getFinalOutput(failoverResult.messages).startsWith("⚠️ PARTIAL:")) {
+					failoverResult.messages.pop();
+				}
+				failoverResult.messages = [...result.messages, ...failoverResult.messages];
+				if (failoverResult.partial) {
+					applyGracefulDegradation(
+						failoverResult,
+						failoverResult.partialReason ?? failoverResult.error ?? "Subagent execution failed",
+					);
+				}
+			}
 			// The recursive call already builds the complete failoverPath via its
 			// own logic (success: else-if branch; exhausted: direct assignment).
 			// Do NOT concat again here — that causes path duplication.
 			return failoverResult;
 		}
 
-		// All providers exhausted — log path and apply graceful degradation
+		// All providers exhausted — log path and let final error handling synthesize output
 		result.failoverPath = updatedFailoverPath;
-		// TASK-03: Scout graceful degradation after all failovers exhausted
-		applyGracefulDegradation(result, result.error ?? "All provider failover attempts exhausted");
 	} else if (failoverPath.length > 0) {
 		// We were in a successful failover chain — record the path
 		result.failoverPath = [...failoverPath, currentModelLabel];
+	}
+
+	if (result.exitCode !== 0 && !result.partial) {
+		applyGracefulDegradation(result, result.error ?? "Subagent execution failed");
 	}
 
 	return result;
@@ -613,26 +629,25 @@ function applyGracefulDegradation(result: SingleResult, reason: string): void {
 	result.partialReason = reason;
 	result.exitCode = 1;
 
-	const existingOutput = getFinalOutput(result.messages);
+	const partialOutput = collectAssistantText(result.messages);
+	const text = partialOutput
+		? `⚠️ PARTIAL: ${reason}. Found before failure:\n${partialOutput}`
+		: `⚠️ PARTIAL: ${reason}\nNo findings were captured before failure.\nNext step: Retry with a different provider or model, or check API credentials and rate limits.`;
 
-	if (existingOutput && existingOutput.trim()) {
-		// Partial messages exist — prefix them
-		const findings = existingOutput.slice(0, 1500) + (existingOutput.length > 1500 ? "..." : "");
-		const nextStep =
-			"Retry with a different provider or model, or check API credentials and rate limits.";
-		const prefixedText = `⚠️ PARTIAL: ${reason}. Found before failure: ${findings}. Recommended: ${nextStep}`;
+	injectSyntheticMessage(result, text);
+}
 
-		// Inject the partial prefix into the result messages so getFinalOutput returns it
-		// We append a synthetic assistant message that the caller sees as the final output
-		injectSyntheticMessage(result, prefixedText);
-	} else {
-		// No output at all — synthesize from the error
-		const synthText =
-			`⚠️ PARTIAL: ${reason}. Found before failure: (no output accumulated — ` +
-			`the process may have failed before producing any results). ` +
-			`Recommended: Check provider API keys and rate limits, then retry.`;
-		injectSyntheticMessage(result, synthText);
+function collectAssistantText(messages: Message[]): string {
+	const sections: string[] = [];
+	for (const message of messages) {
+		if (message.role !== "assistant") continue;
+		for (const part of message.content) {
+			if (part.type !== "text") continue;
+			const text = part.text.trim();
+			if (text) sections.push(text);
+		}
 	}
+	return sections.join("\n\n");
 }
 
 /**

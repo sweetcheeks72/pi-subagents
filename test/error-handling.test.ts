@@ -32,6 +32,7 @@ const chainAvailable = !!chainMod;
 
 const runSync = execution?.runSync;
 const detectSubagentError = utils?.detectSubagentError;
+const getFinalOutput = utils?.getFinalOutput;
 const executeChain = chainMod?.executeChain;
 
 // ---------------------------------------------------------------------------
@@ -139,8 +140,22 @@ describe("runSync error handling", { skip: !piAvailable ? "pi packages not avail
 
 		const result = await runSync(tempDir, agents, "crash", "Do heavy work", {});
 
-		assert.equal(result.exitCode, 2);
+		assert.equal(result.exitCode, 1);
 		assert.ok(result.error?.includes("out of memory"));
+	});
+
+	it("synthesizes non-empty partial output when a crash produces no messages", async () => {
+		mockPi.onCall({ exitCode: 2, stderr: "Fatal: out of memory" });
+		const agents = makeAgentConfigs(["crash"]);
+
+		const result = await runSync(tempDir, agents, "crash", "Do heavy work", {});
+
+		assert.equal(result.exitCode, 1);
+		assert.equal(result.partial, true);
+		assert.equal(result.partialReason, "Fatal: out of memory");
+		assert.match(getFinalOutput(result.messages), /^⚠️ PARTIAL: Fatal: out of memory/);
+		assert.notEqual(getFinalOutput(result.messages).trim(), "", "should never return empty output");
+		assert.ok(!getFinalOutput(result.messages).includes("(no output)"));
 	});
 
 	it("detectSubagentError overrides exit 0 on hidden failure", async () => {
