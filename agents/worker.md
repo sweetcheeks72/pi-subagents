@@ -1,6 +1,7 @@
 ---
 name: worker
 description: General-purpose subagent with full capabilities, isolated context
+tools: read, write, edit, bash, grep, find, ls, search_codebase
 model: claude-sonnet-4-6
 defaultReads: context.md, plan.md
 defaultProgress: true
