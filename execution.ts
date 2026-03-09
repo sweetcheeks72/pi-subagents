@@ -20,6 +20,8 @@ import {
 	type RunSyncOptions,
 	type SingleResult,
 	DEFAULT_MAX_OUTPUT,
+	WORKER_MAX_OUTPUT,
+	WORKER_AGENT_NAMES,
 	truncateOutput,
 	getSubagentDepthEnv,
 } from "./types.js";
@@ -31,7 +33,16 @@ import {
 	extractToolArgsPreview,
 	extractTextFromContent,
 } from "./utils.js";
-import { buildSkillInjection, resolveSkills } from "./skills.js";
+import {
+	detectProviderError,
+	getNextFailoverModel,
+	getFailoverDelay,
+	formatFailoverPath,
+	FAILOVER_SEQUENCE,
+} from "./failover.js";
+import { sliceContext, SLICE_THRESHOLD_BYTES } from "./context-slice.js";
+import { resolveSkills } from "./skills.js";
+import { composeInheritedSystemPrompt } from "./prompt-composition.js";
 import { getPiSpawnCommand } from "./pi-spawn.js";
 import { createJsonlWriter } from "./jsonl-writer.js";
 
@@ -122,11 +133,10 @@ export async function runSync(
 	const skillNames = options.skills ?? agent.skills ?? [];
 	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkills(skillNames, runtimeCwd);
 
-	let systemPrompt = agent.systemPrompt?.trim() || "";
-	if (resolvedSkills.length > 0) {
-		const skillInjection = buildSkillInjection(resolvedSkills);
-		systemPrompt = systemPrompt ? `${systemPrompt}\n\n${skillInjection}` : skillInjection;
-	}
+	const systemPrompt = composeInheritedSystemPrompt({
+		agentSystemPrompt: agent.systemPrompt,
+		resolvedSkills,
+	}) ?? "";
 
 	let tmpDir: string | null = null;
 	if (systemPrompt) {
@@ -137,13 +147,24 @@ export async function runSync(
 
 	// When the task is too long for a CLI argument (Windows ENAMETOOLONG),
 	// write it to a temp file and use pi's @file syntax instead.
+	// TASK-02: Also apply context slicing for tasks > 50KB prose content.
 	const TASK_ARG_LIMIT = 8000;
 	if (task.length > TASK_ARG_LIMIT) {
 		if (!tmpDir) {
 			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
 		}
+		// TASK-02: Try context slicing for large prose tasks
+		const taskBytes = Buffer.byteLength(task, "utf-8");
+		let taskContent = `Task: ${task}`;
+		if (taskBytes > SLICE_THRESHOLD_BYTES) {
+			const sliceResult = sliceContext(task, tmpDir);
+			if (sliceResult.sliced) {
+				taskContent = `Task: ${sliceResult.content}`;
+				result.contextSliced = true;
+			}
+		}
 		const taskFilePath = path.join(tmpDir, "task.md");
-		fs.writeFileSync(taskFilePath, `Task: ${task}`, { mode: 0o600 });
+		fs.writeFileSync(taskFilePath, taskContent, { mode: 0o600 });
 		args.push(`@${taskFilePath}`);
 	} else {
 		args.push(`Task: ${task}`);
@@ -198,6 +219,9 @@ export async function runSync(
 	}
 
 	let closeJsonlWriter: (() => Promise<void>) | undefined;
+	// TASK-01: Track provider errors detected during streaming
+	let providerErrorDetected = false;
+
 	const exitCode = await new Promise<number>((resolve) => {
 		const spawnSpec = getPiSpawnCommand(args);
 		const proc = spawn(spawnSpec.command, spawnSpec.args, {
@@ -300,7 +324,13 @@ export async function runSync(
 							progress.tokens = result.usage.input + result.usage.output;
 						}
 						if (!result.model && evt.message.model) result.model = evt.message.model;
-						if (evt.message.errorMessage) result.error = evt.message.errorMessage;
+						if (evt.message.errorMessage) {
+							result.error = evt.message.errorMessage;
+							// TASK-01: Flag provider-level errors for failover
+							if (detectProviderError(evt.message.errorMessage)) {
+								providerErrorDetected = true;
+							}
+						}
 
 						const text = extractTextFromContent(evt.message.content);
 						if (text) {
@@ -434,19 +464,50 @@ export async function runSync(
 			});
 		}
 
-		if (maxOutput) {
-			const config = { ...DEFAULT_MAX_OUTPUT, ...maxOutput };
+		// TASK-06: Use agent-specific max output limits when truncation is requested
+		if (maxOutput !== undefined) {
+			const baseLimit = WORKER_AGENT_NAMES.includes(agentName) ? WORKER_MAX_OUTPUT : DEFAULT_MAX_OUTPUT;
+			const config = { ...baseLimit, ...maxOutput };
 			const truncationResult = truncateOutput(fullOutput, config, artifactPathsResult.outputPath);
 			if (truncationResult.truncated) {
 				result.truncation = truncationResult;
+				// TASK-06: Flat convenience fields on result
+				result.truncated = true;
+				result.truncatedAt = {
+					bytes: truncationResult.originalBytes,
+					lines: truncationResult.originalLines,
+				};
+				result.artifactPath = truncationResult.artifactPath;
 			}
 		}
-	} else if (maxOutput) {
-		const config = { ...DEFAULT_MAX_OUTPUT, ...maxOutput };
+	} else if (maxOutput !== undefined) {
+		// TASK-06: Use agent-specific max output limits
+		const baseLimit = WORKER_AGENT_NAMES.includes(agentName) ? WORKER_MAX_OUTPUT : DEFAULT_MAX_OUTPUT;
+		const config = { ...baseLimit, ...maxOutput };
 		const fullOutput = getFinalOutput(result.messages);
-		const truncationResult = truncateOutput(fullOutput, config);
+		// Save full output to a temp file so it's accessible even without artifact dir
+		let truncArtifactPath: string | undefined;
+		const outputBytes = Buffer.byteLength(fullOutput, "utf-8");
+		const outputLines = fullOutput.split("\n").length;
+		if (outputBytes > config.bytes || outputLines > config.lines) {
+			try {
+				const truncTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-trunc-"));
+				truncArtifactPath = path.join(truncTmpDir, `${agentName}-full-output.txt`);
+				fs.writeFileSync(truncArtifactPath, fullOutput);
+			} catch {
+				// Non-fatal: truncation artifact save failed
+			}
+		}
+		const truncationResult = truncateOutput(fullOutput, config, truncArtifactPath);
 		if (truncationResult.truncated) {
 			result.truncation = truncationResult;
+			// TASK-06: Flat convenience fields on result
+			result.truncated = true;
+			result.truncatedAt = {
+				bytes: truncationResult.originalBytes,
+				lines: truncationResult.originalLines,
+			};
+			result.artifactPath = truncationResult.artifactPath;
 		}
 	}
 
@@ -461,6 +522,7 @@ export async function runSync(
 
 	// Retry on instant startup failures (lock contention on settings.json / auth.json).
 	// Detection: non-zero exit, very short duration, no messages received (process never started).
+	// NOTE: This must run BEFORE provider failover to correctly handle startup crashes.
 	const retryAttempt = options._retryAttempt ?? 0;
 	if (
 		result.exitCode !== 0 &&
@@ -477,5 +539,117 @@ export async function runSync(
 		});
 	}
 
+	// TASK-01: Provider failover — retry with next provider on rate_limit/overloaded errors.
+	// Failover order: Anthropic x2 → OpenAI x2 → Google x2 → fail with logged path.
+	// Does NOT fire during instant-failure retries (messages.length === 0 guard above
+	// handles startup crashes first).
+	const failoverPath = options._failoverPath ?? [];
+	const currentModelLabel = modelArg ?? agent.model ?? "default";
+
+	if ((providerErrorDetected || detectProviderError(result.error)) && !signal?.aborted) {
+		const nextModel = getNextFailoverModel(currentModelLabel, failoverPath);
+		const updatedFailoverPath = [...failoverPath, currentModelLabel];
+
+		if (nextModel) {
+			// Use attempt-within-provider for per-provider exponential backoff:
+			// attempt 1 in any provider → 1500ms; attempt 2 → 3000ms.
+			const nextEntry = FAILOVER_SEQUENCE.find((e) => e.model === nextModel);
+			const delay = getFailoverDelay(nextEntry?.attempt ?? 1);
+			// Log failover in progress
+			if (onUpdate) {
+				progress.durationMs = Date.now() - startTime;
+				onUpdate({
+					content: [
+						{
+							type: "text",
+							text: `⚠️ Provider error (${result.error ?? "overloaded"}). Failing over to ${nextModel} (path: ${formatFailoverPath(updatedFailoverPath)})`,
+						},
+					],
+					details: { mode: "single", results: [result], progress: [progress] },
+				});
+			}
+			await new Promise((resolve) => setTimeout(resolve, delay));
+			const failoverResult = await runSync(runtimeCwd, agents, agentName, task, {
+				...options,
+				modelOverride: nextModel,
+				_failoverPath: updatedFailoverPath,
+				_retryAttempt: 0, // reset instant-failure counter for new provider
+			});
+			// The recursive call already builds the complete failoverPath via its
+			// own logic (success: else-if branch; exhausted: direct assignment).
+			// Do NOT concat again here — that causes path duplication.
+			return failoverResult;
+		}
+
+		// All providers exhausted — log path and apply graceful degradation
+		result.failoverPath = updatedFailoverPath;
+		// TASK-03: Scout graceful degradation after all failovers exhausted
+		applyGracefulDegradation(result, result.error ?? "All provider failover attempts exhausted");
+	} else if (failoverPath.length > 0) {
+		// We were in a successful failover chain — record the path
+		result.failoverPath = [...failoverPath, currentModelLabel];
+	}
+
 	return result;
+}
+
+// ============================================================================
+// TASK-03: Graceful Degradation
+// ============================================================================
+
+/**
+ * Apply graceful degradation to a result after all retries are exhausted.
+ *
+ * If partial messages accumulated before failure:
+ *   → Prefix output with ⚠️ PARTIAL: {reason}. Found before failure: {findings}. Recommended: {next_step}
+ *   → Set exitCode=1, partial=true
+ *
+ * If no messages at all:
+ *   → Synthesize an error response from the error message
+ *   → Set exitCode=1, partial=true
+ */
+function applyGracefulDegradation(result: SingleResult, reason: string): void {
+	result.partial = true;
+	result.partialReason = reason;
+	result.exitCode = 1;
+
+	const existingOutput = getFinalOutput(result.messages);
+
+	if (existingOutput && existingOutput.trim()) {
+		// Partial messages exist — prefix them
+		const findings = existingOutput.slice(0, 1500) + (existingOutput.length > 1500 ? "..." : "");
+		const nextStep =
+			"Retry with a different provider or model, or check API credentials and rate limits.";
+		const prefixedText = `⚠️ PARTIAL: ${reason}. Found before failure: ${findings}. Recommended: ${nextStep}`;
+
+		// Inject the partial prefix into the result messages so getFinalOutput returns it
+		// We append a synthetic assistant message that the caller sees as the final output
+		injectSyntheticMessage(result, prefixedText);
+	} else {
+		// No output at all — synthesize from the error
+		const synthText =
+			`⚠️ PARTIAL: ${reason}. Found before failure: (no output accumulated — ` +
+			`the process may have failed before producing any results). ` +
+			`Recommended: Check provider API keys and rate limits, then retry.`;
+		injectSyntheticMessage(result, synthText);
+	}
+}
+
+/**
+ * Push a synthetic assistant message into result.messages so that
+ * getFinalOutput() returns the given text.
+ */
+function injectSyntheticMessage(result: SingleResult, text: string): void {
+	const syntheticMessage = {
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text }],
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, total: 0 },
+		},
+	} as unknown as import("@mariozechner/pi-ai").Message;
+	result.messages.push(syntheticMessage);
 }
