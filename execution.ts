@@ -479,10 +479,8 @@ export async function runSync(
 				result.truncation = truncationResult;
 				// TASK-06: Flat convenience fields on result
 				result.truncated = true;
-				result.truncatedAt = {
-					bytes: truncationResult.originalBytes,
-					lines: truncationResult.originalLines,
-				};
+				// TASK-14: truncatedAt reflects which limit was hit + threshold, from TruncationResult
+				result.truncatedAt = truncationResult.truncatedAt;
 				result.artifactPath = truncationResult.artifactPath;
 			}
 		}
@@ -509,10 +507,8 @@ export async function runSync(
 			result.truncation = truncationResult;
 			// TASK-06: Flat convenience fields on result
 			result.truncated = true;
-			result.truncatedAt = {
-				bytes: truncationResult.originalBytes,
-				lines: truncationResult.originalLines,
-			};
+			// TASK-14: truncatedAt reflects which limit was hit + threshold, from TruncationResult
+			result.truncatedAt = truncationResult.truncatedAt;
 			result.artifactPath = truncationResult.artifactPath;
 		}
 	}

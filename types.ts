@@ -21,6 +21,13 @@ export interface TruncationResult {
 	originalBytes?: number;
 	originalLines?: number;
 	artifactPath?: string;
+	/** TASK-14: Which limit(s) were hit and the configured threshold value for each.
+	 *  Only the exceeded limit(s) are included:
+	 *  - line-only: { lines: configuredLimit }
+	 *  - byte-only: { bytes: configuredLimit }
+	 *  - both:      { lines: configuredLimit, bytes: configuredLimit }
+	 */
+	truncatedAt?: { bytes?: number; lines?: number };
 }
 
 export interface Usage {
@@ -313,12 +320,15 @@ export function truncateOutput(
 	const lines = output.split("\n");
 	const bytes = Buffer.byteLength(output, "utf-8");
 
-	if (bytes <= config.bytes && lines.length <= config.lines) {
+	const linesExceeded = lines.length > config.lines;
+	const bytesExceeded = bytes > config.bytes;
+
+	if (!linesExceeded && !bytesExceeded) {
 		return { text: output, truncated: false };
 	}
 
 	let truncatedLines = lines;
-	if (lines.length > config.lines) {
+	if (linesExceeded) {
 		truncatedLines = lines.slice(0, config.lines);
 	}
 
@@ -337,11 +347,16 @@ export function truncateOutput(
 		result = result.slice(0, low);
 	}
 
-	const keptLines = result.split("\n").length;
-	const resultKB = (Buffer.byteLength(result, "utf-8") / 1024).toFixed(1);
-	// TASK-06: New truncation warning format with artifact path
+	// TASK-14: truncatedAt indicates WHICH limit was hit and the configured threshold,
+	// not the original output size. Only include a field when that limit was exceeded.
+	const truncatedAt: { bytes?: number; lines?: number } = {};
+	if (linesExceeded) truncatedAt.lines = config.lines;
+	if (bytesExceeded) truncatedAt.bytes = config.bytes;
+
+	const kbStr = (bytes / 1024).toFixed(1);
+	// TASK-14: Banner format: ⚠️ OUTPUT TRUNCATED ({N} lines / {KB}KB). Full output: {artifactPath}\n\n
 	const artifactRef = artifactPath ? ` Full output: ${artifactPath}` : "";
-	const marker = `⚠️ OUTPUT TRUNCATED at ${lines.length} lines / ${(bytes / 1024).toFixed(1)}KB (showing first ${keptLines} lines / ${resultKB}KB).${artifactRef}\n\n`;
+	const marker = `⚠️ OUTPUT TRUNCATED (${lines.length} lines / ${kbStr}KB).${artifactRef}\n\n`;
 
 	return {
 		text: marker + result,
@@ -349,5 +364,6 @@ export function truncateOutput(
 		originalBytes: bytes,
 		originalLines: lines.length,
 		artifactPath,
+		truncatedAt,
 	};
 }

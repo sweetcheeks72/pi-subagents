@@ -279,5 +279,91 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			"code-heavy task should NOT be sliced even when large",
 		);
 	});
+
+	// -----------------------------------------------------------------------
+	// TASK-14: Truncation metadata — truncatedAt reflects which limit was hit
+	// -----------------------------------------------------------------------
+
+	it("TASK-14: line-limit truncation: truncatedAt.lines=configuredLimit, no bytes field", async () => {
+		// 60 short lines; limit is 50 lines — line limit hit, byte limit not hit
+		const lineOutput = Array.from({ length: 60 }, (_, i) => `Line ${i + 1}`).join("\n");
+		mockPi.onCall({ output: lineOutput });
+		const agents = makeAgentConfigs(["worker"]);
+		const artifactsDir = path.join(tempDir, "artifacts-trunc-lines");
+
+		const result = await runSync(tempDir, agents, "worker", "Generate output", {
+			runId: "test-trunc-lines",
+			artifactsDir,
+			artifactConfig: { enabled: true, includeInput: false, includeOutput: true, includeMetadata: false },
+			// Only lines limit will be hit — bytes limit is large enough for short lines
+			maxOutput: { lines: 50, bytes: 200 * 1024 },
+		});
+
+		assert.equal(result.truncated, true, "should be truncated");
+		assert.ok(result.truncatedAt, "truncatedAt should be set");
+		assert.equal(result.truncatedAt?.lines, 50, "truncatedAt.lines = configured limit, not original size");
+		assert.equal(result.truncatedAt?.bytes, undefined, "no bytes field for line-only truncation");
+		assert.ok(result.artifactPath, "artifactPath should be set when truncated");
+		assert.ok(
+			result.truncation?.text.startsWith("⚠️ OUTPUT TRUNCATED ("),
+			"text should start with TASK-14 banner format",
+		);
+	});
+
+	it("TASK-14: byte-limit truncation: truncatedAt.bytes=configuredLimit, no lines field", async () => {
+		// 3 lines of 300 chars each → ~900 bytes; limit is 200 bytes — bytes limit hit, line limit not
+		const bigLine = "x".repeat(300);
+		const byteOutput = `${bigLine}\n${bigLine}\n${bigLine}`;
+		mockPi.onCall({ output: byteOutput });
+		const agents = makeAgentConfigs(["scout"]);
+		const artifactsDir = path.join(tempDir, "artifacts-trunc-bytes");
+
+		const result = await runSync(tempDir, agents, "scout", "Generate byte output", {
+			runId: "test-trunc-bytes",
+			artifactsDir,
+			artifactConfig: { enabled: true, includeInput: false, includeOutput: true, includeMetadata: false },
+			// Only bytes limit will be hit — lines limit is large enough
+			maxOutput: { lines: 5000, bytes: 200 },
+		});
+
+		assert.equal(result.truncated, true, "should be truncated");
+		assert.ok(result.truncatedAt, "truncatedAt should be set");
+		assert.equal(result.truncatedAt?.bytes, 200, "truncatedAt.bytes = configured limit, not original size");
+		assert.equal(result.truncatedAt?.lines, undefined, "no lines field for byte-only truncation");
+		assert.ok(result.artifactPath, "artifactPath should be set when truncated");
+	});
+
+	it("TASK-14: banner format includes original size and artifactPath", async () => {
+		// 10 lines, limit 5 — banner should show original 10 lines
+		const output = Array.from({ length: 10 }, (_, i) => `Line ${i + 1}`).join("\n");
+		const originalLines = 10;
+		const originalKB = (Buffer.byteLength(output, "utf-8") / 1024).toFixed(1);
+		mockPi.onCall({ output });
+		const agents = makeAgentConfigs(["echo"]);
+		const artifactsDir = path.join(tempDir, "artifacts-banner");
+
+		const result = await runSync(tempDir, agents, "echo", "Generate output", {
+			runId: "test-banner",
+			artifactsDir,
+			artifactConfig: { enabled: true, includeInput: false, includeOutput: true, includeMetadata: false },
+			maxOutput: { lines: 5, bytes: 200 * 1024 },
+		});
+
+		assert.equal(result.truncated, true, "should be truncated");
+		const bannerText = result.truncation?.text ?? "";
+		// Exact format: ⚠️ OUTPUT TRUNCATED ({N} lines / {KB}KB). Full output: {path}\n\n
+		assert.ok(
+			bannerText.includes(`(${originalLines} lines / ${originalKB}KB).`),
+			`Banner should show original size. Got: ${bannerText.slice(0, 120)}`,
+		);
+		assert.ok(
+			bannerText.includes("Full output:"),
+			"Banner should include 'Full output:' clause",
+		);
+		assert.ok(
+			bannerText.includes(result.artifactPath ?? ""),
+			"Banner should include the artifact path",
+		);
+	});
 });
 
