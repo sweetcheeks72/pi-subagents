@@ -150,6 +150,8 @@ export async function runSync(
 	// write it to a temp file and use pi's @file syntax instead.
 	// TASK-02: Also apply context slicing for tasks > 50KB prose content.
 	const TASK_ARG_LIMIT = 8000;
+	// TASK-10: Track slicing before result is declared to avoid use-before-declare bug
+	let _contextSliced = false;
 	if (task.length > TASK_ARG_LIMIT) {
 		if (!tmpDir) {
 			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
@@ -161,7 +163,7 @@ export async function runSync(
 			const sliceResult = sliceContext(task, tmpDir);
 			if (sliceResult.sliced) {
 				taskContent = `Task: ${sliceResult.content}`;
-				result.contextSliced = true;
+				_contextSliced = true;
 			}
 		}
 		const taskFilePath = path.join(tmpDir, "task.md");
@@ -182,6 +184,8 @@ export async function runSync(
 		skills: resolvedSkills.length > 0 ? resolvedSkills.map((s) => s.name) : undefined,
 		skillsWarning: missingSkills.length > 0 ? `Skills not found: ${missingSkills.join(", ")}` : undefined,
 	};
+	// TASK-10: Apply context slicing flag captured before result was declared
+	if (_contextSliced) result.contextSliced = true;
 
 	const progress: AgentProgress = {
 		index: index ?? 0,
