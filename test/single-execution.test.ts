@@ -218,4 +218,66 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 
 		assert.equal(result.exitCode, 0);
 	});
+
+	// -----------------------------------------------------------------------
+	// TASK-10: Context slicing integration tests
+	// -----------------------------------------------------------------------
+
+	it("TASK-10: slices 60KB prose task and sets contextSliced=true", async () => {
+		mockPi.onCall({ output: "Understood the task" });
+		const agents = makeAgentConfigs(["worker"]);
+
+		// Build ~60KB of prose (well above SLICE_THRESHOLD_BYTES = 50KB)
+		const line =
+			"This is a prose line for testing context slicing. It contains words and no code.\n";
+		let bigProseTask =
+			"# Goal\n\nImplement the feature.\n\n## Acceptance Criteria\n\nAll tests pass.\n\n";
+		while (Buffer.byteLength(bigProseTask, "utf-8") < 61 * 1024) {
+			bigProseTask += line;
+		}
+
+		const result = await runSync(tempDir, agents, "worker", bigProseTask, {});
+
+		assert.equal(result.exitCode, 0, "should succeed");
+		assert.equal(
+			result.contextSliced,
+			true,
+			"60KB prose task should set contextSliced=true",
+		);
+	});
+
+	it("TASK-10: does not slice a 5KB task (contextSliced is falsy)", async () => {
+		mockPi.onCall({ output: "Done" });
+		const agents = makeAgentConfigs(["worker"]);
+
+		// 5KB — well below the 50KB threshold
+		const smallTask = "Analyze ".repeat(300); // ~2.4KB
+
+		const result = await runSync(tempDir, agents, "worker", smallTask, {});
+
+		assert.equal(result.exitCode, 0);
+		assert.ok(!result.contextSliced, "5KB task should NOT set contextSliced");
+	});
+
+	it("TASK-10: does not slice a code-heavy large task (contextSliced is falsy)", async () => {
+		mockPi.onCall({ output: "Done" });
+		const agents = makeAgentConfigs(["worker"]);
+
+		// 60KB of many small code blocks — fence lines > 15% of total → isProseTask=false
+		// Each chunk: "```typescript\n" + code line + "```\n" + blank = 4 lines, 2 fences = 50%
+		const chunk = "```typescript\nconst x = { key: 'value', nested: { a: 1 } };\n```\n\n";
+		let codeTask = "";
+		while (Buffer.byteLength(codeTask, "utf-8") < 61 * 1024) {
+			codeTask += chunk;
+		}
+
+		const result = await runSync(tempDir, agents, "worker", codeTask, {});
+
+		assert.equal(result.exitCode, 0);
+		assert.ok(
+			!result.contextSliced,
+			"code-heavy task should NOT be sliced even when large",
+		);
+	});
 });
+
