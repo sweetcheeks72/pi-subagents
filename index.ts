@@ -688,6 +688,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 					details: {
 						mode: "parallel",
 						results,
+						partial: results.some((r) => r.partial === true),
 						progress: params.includeProgress ? allProgress : undefined,
 						artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 					},

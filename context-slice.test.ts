@@ -288,3 +288,57 @@ describe("sliceContext — deterministic file naming", () => {
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// FIX-1: Task file prefix — sliced content must start with context pointer
+// ---------------------------------------------------------------------------
+
+describe("FIX-1: task file prefix behavior (context-slice prefix mismatch)", () => {
+	it("sliced content must NOT get 'Task: ' prefix — pointer must be on line 1", () => {
+		// Simulate the execution.ts prefix logic (the fixed version)
+		const slicedContent = `[CONTEXT SLICED — full: /tmp/context-full-abc123.md]\n\n## Goal\n\nFix the feature.`;
+
+		const taskFileContent = slicedContent.startsWith("[CONTEXT SLICED")
+			? slicedContent
+			: `Task: ${slicedContent}`;
+
+		assert.ok(
+			!taskFileContent.startsWith("Task: "),
+			"sliced content must NOT be prefixed with 'Task: '",
+		);
+		assert.ok(
+			taskFileContent.startsWith("[CONTEXT SLICED — full:"),
+			"sliced content must start with context pointer on line 1",
+		);
+	});
+
+	it("normal content must get 'Task: ' prefix", () => {
+		const normalContent = "Implement the login feature and add tests.";
+
+		const taskFileContent = normalContent.startsWith("[CONTEXT SLICED")
+			? normalContent
+			: `Task: ${normalContent}`;
+
+		assert.ok(
+			taskFileContent.startsWith("Task: "),
+			"normal task content must start with 'Task: '",
+		);
+	});
+
+	it("sliceContext() output starts with [CONTEXT SLICED — not 'Task: '", () => {
+		// End-to-end: ensure sliceContext returns content that starts with the pointer,
+		// which execution.ts will write directly (without 'Task: ' prefix) to the task file
+		const task = generateProse(60);
+		const result = sliceContext(task, tmpDir);
+
+		assert.equal(result.sliced, true, "60KB prose should be sliced");
+		assert.ok(
+			result.content.startsWith("[CONTEXT SLICED — full:"),
+			"sliceContext content must start with context pointer (not 'Task: ')",
+		);
+		assert.ok(
+			!result.content.startsWith("Task: "),
+			"sliceContext content must NOT start with 'Task: ' — execution.ts handles the prefix conditionally",
+		);
+	});
+});

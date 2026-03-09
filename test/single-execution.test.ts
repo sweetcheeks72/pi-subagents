@@ -390,5 +390,37 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 			"Banner should include the artifact path",
 		);
 	});
+
+	// -----------------------------------------------------------------------
+	// FIX 2: Tool-only responses must NOT be flagged as partial
+	// -----------------------------------------------------------------------
+
+	it("FIX-2: agent emitting only tool_use blocks (no text) must NOT be flagged partial", async () => {
+		// Regression: collectAssistantText() returns "" for tool_use-only responses,
+		// causing false partial detection. hasAnyActivity() checks for tool_use too.
+		mockPi.onCall({
+			jsonl: [
+				{
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "tool_use", id: "tool_1", name: "bash", input: { command: "ls" } }],
+						model: "mock/test-model",
+						usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+					},
+				},
+			],
+		});
+		const agents = makeAgentConfigs(["worker"]);
+
+		const result = await runSync(tempDir, agents, "worker", "List files", {});
+
+		assert.equal(result.exitCode, 0, "exit code should be 0");
+		assert.equal(
+			result.partial,
+			false,
+			"tool-only response (no text) must NOT be flagged as partial — tool activity is meaningful work",
+		);
+	});
 });
 

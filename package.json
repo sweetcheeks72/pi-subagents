@@ -34,7 +34,6 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --experimental-strip-types --test *.test.ts",
     "test": "node --experimental-strip-types --import ./test/register-loader.mjs --test *.test.ts",
     "test:failover": "node --experimental-transform-types --import ./test/register-loader.mjs --test test/failover.test.ts",
     "test:integration": "node --experimental-transform-types --import ./test/register-loader.mjs --test test/*.test.ts",

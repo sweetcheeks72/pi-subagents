@@ -158,13 +158,20 @@ export async function runSync(
 		}
 		// TASK-02: Try context slicing for large prose tasks
 		const taskBytes = Buffer.byteLength(task, "utf-8");
-		let taskContent = `Task: ${task}`;
+		let taskContent: string;
 		if (taskBytes > SLICE_THRESHOLD_BYTES) {
 			const sliceResult = sliceContext(task, tmpDir);
 			if (sliceResult.sliced) {
-				taskContent = `Task: ${sliceResult.content}`;
+				// Sliced content starts with '[CONTEXT SLICED — full:...'
+				// Don't add 'Task: ' prefix so the pointer is on line 1,
+				// matching the agent instruction: "If your task begins with [CONTEXT SLICED"
+				taskContent = sliceResult.content;
 				_contextSliced = true;
+			} else {
+				taskContent = `Task: ${task}`;
 			}
+		} else {
+			taskContent = `Task: ${task}`;
 		}
 		const taskFilePath = path.join(tmpDir, "task.md");
 		fs.writeFileSync(taskFilePath, taskContent, { mode: 0o600 });
@@ -608,16 +615,15 @@ export async function runSync(
 
 	// FIX: Detect silent empty output — exitCode=0 but no assistant text produced.
 	// This catches scouts/workers that exit cleanly but emit nothing useful.
-	if (result.exitCode === 0 && !result.partial) {
-		const assistantText = collectAssistantText(result.messages);
-		if (!assistantText.trim()) {
-			result.partial = true;
-			result.partialReason = "empty output despite successful exit";
-			injectSyntheticMessage(
-				result,
-				"⚠️ PARTIAL (empty output): Agent completed with exit code 0 but returned no text output.\nNext step: Retry with a different prompt or check that the agent has the required tools.",
-			);
-		}
+	// FIX 2: Use hasAnyActivity() so tool-only responses (no text) are not falsely
+	// flagged as partial — tool_use blocks ARE meaningful work.
+	if (result.exitCode === 0 && !result.partial && !hasAnyActivity(result.messages)) {
+		result.partial = true;
+		result.partialReason = "empty output despite successful exit";
+		injectSyntheticMessage(
+			result,
+			"⚠️ PARTIAL (empty output): Agent completed with exit code 0 but returned no text output.\nNext step: Retry with a different prompt or check that the agent has the required tools.",
+		);
 	}
 
 	// Detect unknown tool warnings in agent output (e.g. search_codebase not loaded).
@@ -659,6 +665,22 @@ function applyGracefulDegradation(result: SingleResult, reason: string): void {
 		: `⚠️ PARTIAL: ${reason}\nNo findings were captured before failure.\nNext step: Retry with a different provider or model, or check API credentials and rate limits.`;
 
 	injectSyntheticMessage(result, text);
+}
+
+/**
+ * Returns true if any assistant message has either text content or tool_use blocks.
+ * Used to avoid false-positive partial detection when the agent emits only tool_use
+ * (no text) — tool activity IS meaningful work even with no text output.
+ */
+function hasAnyActivity(messages: Message[]): boolean {
+	for (const message of messages) {
+		if (message.role !== "assistant") continue;
+		for (const part of message.content) {
+			if (part.type === "text" && part.text.trim()) return true;
+			if (part.type === "tool_use") return true;
+		}
+	}
+	return false;
 }
 
 function collectAssistantText(messages: Message[]): string {
@@ -713,9 +735,9 @@ function extractToolWarnings(text: string): string[] {
 
 	// Pattern 1: "Unknown tool: <name>" (pi error format)
 	// VERIFIED: tools-manager.js emits `throw new Error(\`Unknown tool: ${tool}\`)`
-	// Format: "Unknown tool: search_codebase" — the regex correctly matches this
-	// (colon + space after tool name, no quotes around the tool name)
-	const unknownToolRegex = /unknown tool[:\s]+["']?([a-z_][a-z0-9_]*)["']?/gi;
+	// Format: "Unknown tool: search_codebase" — requires colon separator (no space-only)
+	// FIX 4: Tightened to require colon (was /unknown tool[:\s]+/ which matched 'unknown tool worked')
+	const unknownToolRegex = /unknown tool:\s+([a-z_][a-z0-9_]*)/gi;
 	let m: RegExpExecArray | null;
 	while ((m = unknownToolRegex.exec(text)) !== null) {
 		const toolName = m[1];

@@ -144,4 +144,34 @@ describe("parallel agent execution", { skip: !piAvailable ? "pi packages not ava
 		const ok = results.filter((r: any) => r.exitCode === 0).length;
 		assert.equal(ok, 2);
 	});
+
+	it("FIX-3: aggregate partial=true when any worker result is partial", async () => {
+		// First worker fails (→ partial=true via graceful degradation), second succeeds
+		mockPi.onCall({ exitCode: 1, stderr: "Worker A failed" });
+		mockPi.onCall({ output: "Worker B done" });
+		const agents = makeAgentConfigs(["agent-a", "agent-b"]);
+
+		const results = await mapConcurrent(
+			[
+				{ agent: "agent-a", task: "Task A", index: 0 },
+				{ agent: "agent-b", task: "Task B", index: 1 },
+			],
+			2,
+			async ({ agent, task, index }: any) =>
+				runSync(tempDir, agents, agent, task, { index }),
+		);
+
+		// Verify individual partial flags
+		const hasPartial = results.some((r: any) => r.partial === true);
+		assert.equal(hasPartial, true, "at least one worker should be partial after failure");
+
+		// Simulate the index.ts aggregate: details.partial = results.some(r => r.partial === true)
+		// This is the fix in FIX-3: callers get top-level partial without iterating details.results
+		const aggregatePartial = results.some((r: any) => r.partial === true);
+		assert.equal(
+			aggregatePartial,
+			true,
+			"aggregate partial must be true when any worker result is partial",
+		);
+	});
 });

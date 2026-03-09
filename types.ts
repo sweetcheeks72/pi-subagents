@@ -136,6 +136,8 @@ export interface Details {
 		originalLines?: number;
 		artifactPath?: string;
 	};
+	// FIX 3: Aggregate partial flag — true if any worker result is partial
+	partial?: boolean;
 	// Chain metadata for observability
 	chainAgents?: string[];      // Agent names in order, e.g., ["scout", "planner"]
 	totalSteps?: number;         // Total steps in chain
