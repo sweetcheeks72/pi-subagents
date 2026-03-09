@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Autonomous web researcher — searches, evaluates, and synthesizes a focused research brief
-tools: read, write, web_search, fetch_content, get_search_content
+tools: read, write, bash, web_search, fetch_content, get_search_content
 model: anthropic/claude-sonnet-4-6
 output: research.md
 defaultProgress: true

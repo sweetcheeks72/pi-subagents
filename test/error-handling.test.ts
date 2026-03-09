@@ -158,6 +158,19 @@ describe("runSync error handling", { skip: !piAvailable ? "pi packages not avail
 		assert.ok(!getFinalOutput(result.messages).includes("(no output)"));
 	});
 
+	it("sets partial=true when exitCode=0 but no assistant text produced", async () => {
+		// Agent exits cleanly but emits no assistant messages — silent empty output
+		mockPi.onCall({ exitCode: 0, jsonl: [] });
+		const agents = makeAgentConfigs(["quiet"]);
+
+		const result = await runSync(tempDir, agents, "quiet", "Do something silently", {});
+
+		assert.equal(result.partial, true, "silent empty output should be marked partial");
+		assert.equal(result.partialReason, "empty output despite successful exit");
+		const output = getFinalOutput(result.messages);
+		assert.match(output, /⚠️ PARTIAL \(empty output\)/, "should prepend PARTIAL warning to result text");
+	});
+
 	it("detectSubagentError overrides exit 0 on hidden failure", async () => {
 		mockPi.onCall({
 			jsonl: [

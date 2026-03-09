@@ -180,6 +180,7 @@ export function renderSubagentResult(
 	_options: { expanded: boolean },
 	theme: Theme,
 ): Widget {
+	const expanded = _options.expanded;
 	const d = result.details;
 	if (!d || !d.results.length) {
 		const t = result.content[0];
@@ -192,12 +193,19 @@ export function renderSubagentResult(
 	if (d.mode === "single" && d.results.length === 1) {
 		const r = d.results[0];
 		const isRunning = r.progress?.status === "running";
+		const output = r.truncation?.text || getFinalOutput(r.messages);
+		const hasTextOutput = Boolean(output?.trim());
+		const emptyInlineOutputWarning = !isRunning && r.exitCode === 0 && !hasTextOutput && !r.outputTargetPath;
+		const warningNote = emptyInlineOutputWarning
+			? (r.error || "Agent returned no inline output.")
+			: r.error;
 		const icon = isRunning
 			? theme.fg("warning", "...")
-			: r.exitCode === 0
-				? theme.fg("success", "ok")
-				: theme.fg("error", "X");
-		const output = r.truncation?.text || getFinalOutput(r.messages);
+			: r.exitCode !== 0
+				? theme.fg("error", "X")
+				: warningNote
+					? theme.fg("warning", "⚠")
+					: theme.fg("success", "ok");
 
 		const progressInfo = isRunning && r.progress
 			? ` | ${r.progress.toolCount} tools, ${formatTokens(r.progress.tokens)} tok, ${formatDuration(r.progress.durationMs)}`
@@ -206,16 +214,49 @@ export function renderSubagentResult(
 				: "";
 
 		const w = getTermWidth() - 4;
-		const c = new Container();
-		c.addChild(new Text(truncLine(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${progressInfo}`, w), 0, 0));
-		c.addChild(new Spacer(1));
 		const taskMaxLen = Math.max(20, w - 8);
 		const taskPreview = r.task.length > taskMaxLen
 			? `${r.task.slice(0, taskMaxLen)}...`
 			: r.task;
+		if (!expanded) {
+			const collapsed = new Container();
+			collapsed.addChild(new Text(truncLine(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${progressInfo}`, w), 0, 0));
+			collapsed.addChild(new Text(truncLine(theme.fg("dim", `Task: ${taskPreview}`), w), 0, 0));
+			if (isRunning && r.progress?.currentTool) {
+				const maxToolArgsLen = Math.max(50, w - 20);
+				const toolArgsPreview = r.progress.currentToolArgs
+					? (r.progress.currentToolArgs.length > maxToolArgsLen
+						? `${r.progress.currentToolArgs.slice(0, maxToolArgsLen)}...`
+						: r.progress.currentToolArgs)
+					: "";
+				const toolLine = toolArgsPreview
+					? `${r.progress.currentTool}: ${toolArgsPreview}`
+					: r.progress.currentTool;
+				collapsed.addChild(new Text(truncLine(theme.fg("warning", `> ${toolLine}`), w), 0, 0));
+			} else if (warningNote) {
+				collapsed.addChild(new Text(truncLine(theme.fg("warning", `⚠️ ${warningNote}`), w), 0, 0));
+			} else {
+				const usageLine = formatUsage(r.usage, r.model);
+				const failoverSuffix = (r as any).failoverPath?.length
+					? ` (failover: ${(r as any).failoverPath.join("→")})`
+					: "";
+				const truncSuffix = (r as any).truncatedAt
+					? ` ⚠️ truncated`
+					: "";
+				collapsed.addChild(new Text(truncLine(theme.fg("dim", `${usageLine}${failoverSuffix}${truncSuffix}`), w), 0, 0));
+			}
+			return collapsed;
+		}
+		const c = new Container();
+		c.addChild(new Text(truncLine(`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${progressInfo}`, w), 0, 0));
+		c.addChild(new Spacer(1));
 		c.addChild(
 			new Text(truncLine(theme.fg("dim", `Task: ${taskPreview}`), w), 0, 0),
 		);
+		if (warningNote) {
+			c.addChild(new Spacer(1));
+			c.addChild(new Text(truncLine(theme.fg("warning", `⚠️ ${warningNote}`), w), 0, 0));
+		}
 		c.addChild(new Spacer(1));
 
 		const items = getDisplayItems(r.messages);
@@ -234,6 +275,16 @@ export function renderSubagentResult(
 			c.addChild(new Text(truncLine(theme.fg("warning", `⚠️ ${r.skillsWarning}`), w), 0, 0));
 		}
 		c.addChild(new Text(truncLine(theme.fg("dim", formatUsage(r.usage, r.model)), w), 0, 0));
+		if ((r as any).failoverPath?.length) {
+			c.addChild(new Text(truncLine(theme.fg("warning", `↩ failover: ${(r as any).failoverPath.join("→")}`), w), 0, 0));
+		}
+		if ((r as any).truncatedAt) {
+			const ta = (r as any).truncatedAt as { bytes?: number; lines?: number };
+			const parts: string[] = [];
+			if (ta.lines) parts.push(`${ta.lines} lines`);
+			if (ta.bytes) parts.push(`${Math.round(ta.bytes / 1024)}KB`);
+			c.addChild(new Text(truncLine(theme.fg("warning", `⚠️ truncated at ${parts.join("/")} `), w), 0, 0));
+		}
 		if (r.sessionFile) {
 			c.addChild(new Text(truncLine(theme.fg("dim", `Session: ${shortenPath(r.sessionFile)}`), w), 0, 0));
 		}

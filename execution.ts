@@ -606,6 +606,20 @@ export async function runSync(
 		applyGracefulDegradation(result, result.error ?? "Subagent execution failed");
 	}
 
+	// FIX: Detect silent empty output — exitCode=0 but no assistant text produced.
+	// This catches scouts/workers that exit cleanly but emit nothing useful.
+	if (result.exitCode === 0 && !result.partial) {
+		const assistantText = collectAssistantText(result.messages);
+		if (!assistantText.trim()) {
+			result.partial = true;
+			result.partialReason = "empty output despite successful exit";
+			injectSyntheticMessage(
+				result,
+				"⚠️ PARTIAL (empty output): Agent completed with exit code 0 but returned no text output.\nNext step: Retry with a different prompt or check that the agent has the required tools.",
+			);
+		}
+	}
+
 	return result;
 }
 
