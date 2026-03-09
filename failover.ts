@@ -40,13 +40,35 @@ export const FAILOVER_SEQUENCE: FailoverEntry[] = [
 // ============================================================================
 
 /**
- * Detect if an error message represents a provider-level rate limit or
- * overload error that should trigger failover to the next provider.
+ * Detect if an error message represents a provider-level error that should
+ * trigger failover to the next provider.
+ *
+ * Returns the error category:
+ *   - `'rate_limit'` for rate-limit / overload errors
+ *   - `'auth_error'` for authentication / authorization errors (401/403)
+ *   - `false` if no provider error is detected
+ *
+ * Both truthy categories trigger the same failover behavior (skip to next
+ * provider). The distinction is available for logging purposes.
  */
-export function detectProviderError(error: string | undefined): boolean {
+export function detectProviderError(error: string | undefined): 'rate_limit' | 'auth_error' | false {
 	if (!error) return false;
 	const normalized = error.toLowerCase();
-	return (
+
+	// Auth errors — 401/403 responses or missing credentials
+	if (
+		normalized.includes("401") ||
+		normalized.includes("403") ||
+		normalized.includes("invalid_api_key") ||
+		normalized.includes("authentication_error") ||
+		normalized.includes("unauthorized") ||
+		normalized.includes("no auth credentials")
+	) {
+		return 'auth_error';
+	}
+
+	// Rate-limit / overload errors
+	if (
 		normalized.includes("rate_limit_error") ||
 		normalized.includes("overloaded_error") ||
 		normalized.includes("overloaded") ||
@@ -54,7 +76,11 @@ export function detectProviderError(error: string | undefined): boolean {
 		normalized.includes("too many requests") ||
 		normalized.includes("service_unavailable") ||
 		normalized.includes("529") // Anthropic overloaded status code
-	);
+	) {
+		return 'rate_limit';
+	}
+
+	return false;
 }
 
 // ============================================================================

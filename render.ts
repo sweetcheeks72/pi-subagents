@@ -244,6 +244,9 @@ export function renderSubagentResult(
 					? ` ⚠️ truncated`
 					: "";
 				collapsed.addChild(new Text(truncLine(theme.fg("dim", `${usageLine}${failoverSuffix}${truncSuffix}`), w), 0, 0));
+				if ((r as any).warnings?.length) {
+					collapsed.addChild(new Text(truncLine(theme.fg("warning", `⚠️ Tool warnings: ${(r as any).warnings.join(", ")}`), w), 0, 0));
+				}
 			}
 			return collapsed;
 		}
@@ -275,6 +278,9 @@ export function renderSubagentResult(
 			c.addChild(new Text(truncLine(theme.fg("warning", `⚠️ ${r.skillsWarning}`), w), 0, 0));
 		}
 		c.addChild(new Text(truncLine(theme.fg("dim", formatUsage(r.usage, r.model)), w), 0, 0));
+		if ((r as any).warnings?.length) {
+			c.addChild(new Text(truncLine(theme.fg("warning", `⚠️ Tool warnings: ${(r as any).warnings.join(", ")}`), w), 0, 0));
+		}
 		if ((r as any).failoverPath?.length) {
 			c.addChild(new Text(truncLine(theme.fg("warning", `↩ failover: ${(r as any).failoverPath.join("→")}`), w), 0, 0));
 		}

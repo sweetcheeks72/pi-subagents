@@ -815,13 +815,23 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 					outputPath,
 					exitCode: r.exitCode,
 				});
+				const outputTargetExists = outputPath ? fs.existsSync(outputPath) : undefined;
+				const emptyInlineOutputWarning = r.exitCode === 0 && !fullOutput.trim() && !outputPath
+					? (r.error || "Agent returned no inline output.")
+					: undefined;
+				const singleResult = {
+					...r,
+					outputTargetPath: outputPath,
+					outputTargetExists,
+					error: emptyInlineOutputWarning ?? r.error,
+				};
 
 				if (r.exitCode !== 0)
 					return {
 						content: [{ type: "text", text: r.error || "Failed" }],
 						details: {
 							mode: "single",
-							results: [r],
+							results: [singleResult],
 							progress: params.includeProgress ? allProgress : undefined,
 							artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 							truncation: r.truncation,
@@ -829,10 +839,10 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 						isError: true,
 					};
 				return {
-					content: [{ type: "text", text: finalizedOutput.displayOutput || "(no output)" }],
+					content: [{ type: "text", text: finalizedOutput.displayOutput || (emptyInlineOutputWarning ? `⚠️ ${emptyInlineOutputWarning}` : "(no output)") }],
 					details: {
 						mode: "single",
-						results: [r],
+						results: [singleResult],
 						progress: params.includeProgress ? allProgress : undefined,
 						artifacts: allArtifactPaths.length ? { dir: artifactsDir, files: allArtifactPaths } : undefined,
 						truncation: r.truncation,

@@ -15,7 +15,8 @@ import { injectSingleOutputInstruction, resolveSingleOutputPath } from "./single
 import { isParallelStep, resolveStepBehavior, type ChainStep, type ParallelStep, type SequentialStep, type StepOverrides } from "./settings.js";
 import type { RunnerStep } from "./parallel-utils.js";
 import { resolvePiPackageRoot } from "./pi-spawn.js";
-import { buildSkillInjection, normalizeSkillInput, resolveSkills } from "./skills.js";
+import { normalizeSkillInput, resolveSkills } from "./skills.js";
+import { composeInheritedSystemPrompt } from "./prompt-composition.js";
 import {
 	type ArtifactConfig,
 	type Details,
@@ -152,11 +153,10 @@ export function executeAsyncChain(
 		const skillNames = behavior.skills === false ? [] : behavior.skills;
 		const { resolved: resolvedSkills } = resolveSkills(skillNames, ctx.cwd);
 
-		let systemPrompt = a.systemPrompt?.trim() || null;
-		if (resolvedSkills.length > 0) {
-			const injection = buildSkillInjection(resolvedSkills);
-			systemPrompt = systemPrompt ? `${systemPrompt}\n\n${injection}` : injection;
-		}
+		const systemPrompt = composeInheritedSystemPrompt({
+			agentSystemPrompt: a.systemPrompt,
+			resolvedSkills,
+		});
 
 		// Resolve output path and inject instruction into task
 		// Use step's cwd if specified, otherwise fall back to chain-level cwd
@@ -261,11 +261,10 @@ export function executeAsyncSingle(
 	const { agent, task, agentConfig, ctx, cwd, maxOutput, artifactsDir, artifactConfig, shareEnabled, sessionRoot } = params;
 	const skillNames = params.skills ?? agentConfig.skills ?? [];
 	const { resolved: resolvedSkills } = resolveSkills(skillNames, ctx.cwd);
-	let systemPrompt = agentConfig.systemPrompt?.trim() || null;
-	if (resolvedSkills.length > 0) {
-		const injection = buildSkillInjection(resolvedSkills);
-		systemPrompt = systemPrompt ? `${systemPrompt}\n\n${injection}` : injection;
-	}
+	const systemPrompt = composeInheritedSystemPrompt({
+		agentSystemPrompt: agentConfig.systemPrompt,
+		resolvedSkills,
+	});
 
 	const asyncDir = path.join(ASYNC_DIR, id);
 	try {
