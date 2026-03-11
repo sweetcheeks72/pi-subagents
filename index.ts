@@ -626,6 +626,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 						maxOutput: params.maxOutput,
 						modelOverride: modelOverrides[i],
 						skills: effectiveSkills === false ? [] : effectiveSkills,
+						maxDurationMs: params.maxDurationMs,
 						onUpdate: onUpdate
 							? (p) => {
 									const stepResults = p.details?.results || [];
@@ -803,6 +804,7 @@ MANAGEMENT (use action field — omit agent/task/chain/tasks):
 					onUpdate,
 					modelOverride,
 					skills: effectiveSkills,
+					maxDurationMs: params.maxDurationMs,
 				});
 				recordRun(params.agent!, cleanTask, r.exitCode, r.progressSummary?.durationMs ?? 0);
 

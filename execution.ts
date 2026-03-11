@@ -416,6 +416,21 @@ export async function runSync(
 			if (signal.aborted) kill();
 			else signal.addEventListener("abort", kill, { once: true });
 		}
+
+		// Wall-clock timeout: kill subprocess if it exceeds maxDurationMs
+		const maxDurationMs = options.maxDurationMs ?? 10 * 60 * 1000; // default 10 minutes
+		if (maxDurationMs > 0) {
+			const timeoutId = setTimeout(() => {
+				if (!processClosed) {
+					result.error = `Subagent exceeded wall-clock timeout of ${Math.round(maxDurationMs / 1000)}s`;
+					result.partial = true;
+					proc.kill("SIGTERM");
+					setTimeout(() => { if (!proc.killed) proc.kill("SIGKILL"); }, 3000);
+				}
+			}, maxDurationMs);
+			// Clean up the timer when process closes naturally
+			proc.on("close", () => clearTimeout(timeoutId));
+		}
 	});
 
 	if (closeJsonlWriter) {

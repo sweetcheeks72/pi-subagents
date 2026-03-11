@@ -241,6 +241,8 @@ export interface RunSyncOptions {
 	_retryAttempt?: number;
 	/** Internal: provider failover path (models already tried and failed) */
 	_failoverPath?: string[];
+	/** Wall-clock timeout in ms (default: 10 * 60 * 1000). Process is killed after this duration. */
+	maxDurationMs?: number;
 }
 
 export interface ExtensionConfig {
