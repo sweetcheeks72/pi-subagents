@@ -231,6 +231,15 @@ export async function runSync(
 		spawnEnv.MCP_DIRECT_TOOLS = "__none__";
 	}
 
+	// Extract mesh coordination info from task text for timeout handoff.
+	// The subagent-mesh extension injects a "## Subagent Mesh" block with
+	// run-id and alias into the task. We parse it here so the idle/wall-clock
+	// timeout handlers can share state to the mesh before killing.
+	const meshRunIdMatch = task.match(/\*\*Run ID:\*\*\s*`([a-f0-9]+)`/);
+	const meshAliasMatch = task.match(/\*\*Your alias:\*\*\s*`([\w-]+)`/);
+	if (meshRunIdMatch) spawnEnv.MESH_RUN_ID = meshRunIdMatch[1];
+	if (meshAliasMatch) spawnEnv.MESH_AGENT_NAME = meshAliasMatch[1];
+
 	let closeJsonlWriter: (() => Promise<void>) | undefined;
 	// TASK-01: Track provider errors detected during streaming
 	let providerErrorDetected = false;
@@ -245,6 +254,36 @@ export async function runSync(
 		const jsonlWriter = createJsonlWriter(jsonlPath, proc.stdout);
 		closeJsonlWriter = () => jsonlWriter.close();
 		let buf = "";
+
+		// Idle timeout: kill subprocess after 5 minutes of no stdout output.
+		// This catches workers that complete their API calls but go silent
+		// (rate limited, context exhausted, model hanging).
+		const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+		let idleTimer: ReturnType<typeof setTimeout> | null = null;
+		const resetIdleTimer = () => {
+			if (idleTimer) clearTimeout(idleTimer);
+			idleTimer = setTimeout(() => {
+				if (!processClosed) {
+					// Graceful mesh handoff before kill
+					const meshRunId = spawnEnv.MESH_RUN_ID;
+					const meshAgent = spawnEnv.MESH_AGENT_NAME;
+					if (meshRunId && meshAgent) {
+						const meshScripts = path.join(os.homedir(), '.pi', 'agent', 'scripts', 'subagent-mesh');
+						try {
+							// Share partial execution log
+							const { execSync } = require('node:child_process');
+							execSync(`node ${meshScripts}/log-share.js ${meshRunId} ${meshAgent} share --summary "TIMEOUT: idle for 5min, partial work shared"`, { timeout: 5000 });
+							execSync(`node ${meshScripts}/broadcast.js ${meshRunId} ${meshAgent} "IDLE TIMEOUT — partial results shared via log-share"`, { timeout: 5000 });
+						} catch { /* best effort */ }
+					}
+					result.error = `Subagent idle timeout: no output for ${IDLE_TIMEOUT_MS / 1000}s`;
+					result.partial = true;
+					proc.kill("SIGTERM");
+					setTimeout(() => { if (!proc.killed) proc.kill("SIGKILL"); }, 3000);
+				}
+			}, IDLE_TIMEOUT_MS);
+		};
+		resetIdleTimer();
 
 		// Throttled update mechanism - consolidates all updates
 		let lastUpdateTime = 0;
@@ -383,6 +422,7 @@ export async function runSync(
 		let stderrBuf = "";
 
 		proc.stdout.on("data", (d) => {
+			resetIdleTimer(); // Reset idle timeout on any output
 			buf += d.toString();
 			const lines = buf.split("\n");
 			buf = lines.pop() || "";
@@ -395,6 +435,7 @@ export async function runSync(
 			stderrBuf += d.toString();
 		});
 		proc.on("close", (code) => {
+			if (idleTimer) clearTimeout(idleTimer); // Clean up idle timer
 			processClosed = true;
 			if (pendingTimer) {
 				clearTimeout(pendingTimer);
@@ -422,6 +463,17 @@ export async function runSync(
 		if (maxDurationMs > 0) {
 			const timeoutId = setTimeout(() => {
 				if (!processClosed) {
+					// Graceful mesh handoff before kill
+					const meshRunId = spawnEnv.MESH_RUN_ID;
+					const meshAgent = spawnEnv.MESH_AGENT_NAME;
+					if (meshRunId && meshAgent) {
+						const meshScripts = path.join(os.homedir(), '.pi', 'agent', 'scripts', 'subagent-mesh');
+						try {
+							const { execSync } = require('node:child_process');
+							execSync(`node ${meshScripts}/log-share.js ${meshRunId} ${meshAgent} share --summary "WALL-CLOCK TIMEOUT: exceeded ${Math.round(maxDurationMs / 1000)}s"`, { timeout: 5000 });
+							execSync(`node ${meshScripts}/broadcast.js ${meshRunId} ${meshAgent} "WALL-CLOCK TIMEOUT — partial results shared via log-share"`, { timeout: 5000 });
+						} catch { /* best effort */ }
+					}
 					result.error = `Subagent exceeded wall-clock timeout of ${Math.round(maxDurationMs / 1000)}s`;
 					result.partial = true;
 					proc.kill("SIGTERM");
