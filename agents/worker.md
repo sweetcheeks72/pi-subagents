@@ -1,10 +1,11 @@
 ---
 name: worker
 description: General-purpose subagent with full capabilities, isolated context
-tools: read, write, edit, bash, grep, find, ls, search_codebase
+tools: read, write, edit, bash, grep, find, ls, ~/.pi/agent/extensions/codebase-index.ts
 model: claude-sonnet-4-6
 defaultReads: context.md, plan.md
 defaultProgress: true
+skills: visual-explainer
 ---
 
 ## Context Slicing
@@ -37,3 +38,11 @@ Progress.md format:
 
 ## Notes
 Any blockers or decisions.
+
+## Visual Output
+
+When your task includes producing a session recap, visual explanation, or HTML artifact:
+1. Read the visual-explainer skill at `~/.pi/agent/git/github.com/nicobailon/visual-explainer/SKILL.md` first
+2. Follow its workflow: Think → Structure → Read template → Generate HTML
+3. Write the HTML file to the path specified in the task
+4. The orchestrator will launch it via `~/.pi/agent/scripts/open-html-artifact.sh`
